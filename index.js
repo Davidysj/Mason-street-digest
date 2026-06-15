@@ -1,6 +1,5 @@
-const nodemailer = require('nodemailer');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 const https = require('https');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 // ============================================================
 // TOPIC KEYWORDS — edit these to change what news is searched
@@ -14,16 +13,19 @@ const SEARCH_QUERIES = [
 ];
 // ============================================================
 
-function fetchJson(url) {
+function fetchJson(url, options = {}) {
   return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
+    const req = https.request(url, options, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
         try { resolve(JSON.parse(data)); }
         catch (e) { reject(e); }
       });
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    if (options.body) req.write(options.body);
+    req.end();
   });
 }
 
@@ -36,8 +38,10 @@ async function fetchArticles() {
     const url = `https://newsapi.org/v2/everything?q=${encoded}&sortBy=publishedAt&pageSize=10&language=en&apiKey=${apiKey}`;
 
     try {
-      const data = await fetchJson(url);
-      console.log(`Query "${query}": status=${data.status}, totalResults=${data.totalResults}, articles=${data.articles?.length ?? 0}`);
+      const data = await fetchJson(url, {
+        headers: { 'User-Agent': 'MasonStreetDigest/1.0' },
+      });
+      console.log(`Query "${query}": status=${data.status}, articles=${data.articles?.length ?? 0}`);
       if (data.status === 'ok' && data.articles) {
         allArticles.push(...data.articles);
       } else if (data.message) {
@@ -48,7 +52,6 @@ async function fetchArticles() {
     }
   }
 
-  // Deduplicate by URL
   const seen = new Set();
   return allArticles.filter(a => {
     if (!a.url || seen.has(a.url)) return false;
@@ -160,14 +163,6 @@ function escapeHtml(str) {
 }
 
 async function sendEmail(articles) {
-  const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: process.env.GMAIL_ADDRESS,
-      pass: process.env.GMAIL_APP_PASSWORD,
-    },
-  });
-
   const dateShort = new Date().toLocaleDateString('en-US', {
     month: 'short', day: 'numeric', year: 'numeric',
   });
@@ -176,18 +171,32 @@ async function sendEmail(articles) {
     ? `[Mason Street Digest] No new articles — ${dateShort}`
     : `[Mason Street Digest] ${articles.length} article${articles.length !== 1 ? 's' : ''} — ${dateShort}`;
 
-  const info = await transporter.sendMail({
-    from: `"Mason Street News Agent" <${process.env.GMAIL_ADDRESS}>`,
-    to: process.env.RECIPIENT_EMAIL || process.env.GMAIL_ADDRESS,
+  const payload = JSON.stringify({
+    from: 'Mason Street News Agent <onboarding@resend.dev>',
+    to: [process.env.RECIPIENT_EMAIL || process.env.GMAIL_ADDRESS],
     subject,
     html: buildEmailHtml(articles),
   });
 
-  console.log(`Email sent — Message ID: ${info.messageId}`);
+  const result = await fetchJson('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(payload),
+    },
+    body: payload,
+  });
+
+  if (result.id) {
+    console.log(`Email sent — Resend ID: ${result.id}`);
+  } else {
+    throw new Error(`Resend error: ${JSON.stringify(result)}`);
+  }
 }
 
 async function main() {
-  const required = ['GEMINI_API_KEY', 'GMAIL_ADDRESS', 'GMAIL_APP_PASSWORD', 'NEWS_API_KEY'];
+  const required = ['GEMINI_API_KEY', 'NEWS_API_KEY', 'RESEND_API_KEY', 'RECIPIENT_EMAIL'];
   const missing = required.filter(k => !process.env[k]);
   if (missing.length > 0) {
     console.error(`Missing required environment variables: ${missing.join(', ')}`);
