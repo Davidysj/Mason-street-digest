@@ -6,11 +6,11 @@ const https = require('https');
 // TOPIC KEYWORDS — edit these to change what news is searched
 // ============================================================
 const SEARCH_QUERIES = [
-  'skilled trades workforce training',
+  'skilled trades training',
   'vocational training apprenticeship',
-  'skilled labor shortage',
-  'trade workforce development',
-  'blue collar worker training automation',
+  'workforce development training',
+  'trade labor shortage',
+  'blue collar workforce',
 ];
 // ============================================================
 
@@ -29,18 +29,19 @@ function fetchJson(url) {
 
 async function fetchArticles() {
   const apiKey = process.env.NEWS_API_KEY;
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-
   const allArticles = [];
 
   for (const query of SEARCH_QUERIES) {
     const encoded = encodeURIComponent(query);
-    const url = `https://newsapi.org/v2/everything?q=${encoded}&from=${sevenDaysAgo}&sortBy=relevancy&pageSize=5&language=en&apiKey=${apiKey}`;
+    const url = `https://newsapi.org/v2/everything?q=${encoded}&sortBy=publishedAt&pageSize=10&language=en&apiKey=${apiKey}`;
 
     try {
       const data = await fetchJson(url);
-      if (data.articles) {
+      console.log(`Query "${query}": status=${data.status}, totalResults=${data.totalResults}, articles=${data.articles?.length ?? 0}`);
+      if (data.status === 'ok' && data.articles) {
         allArticles.push(...data.articles);
+      } else if (data.message) {
+        console.warn(`NewsAPI error for "${query}": ${data.message}`);
       }
     } catch (err) {
       console.warn(`Failed to fetch for query "${query}":`, err.message);
@@ -68,25 +69,23 @@ async function filterAndSummarize(rawArticles) {
 
   const prompt = `You are a news curator for Attatche / Mason Street Training, a company focused on skilled trades workforce development and training programs.
 
-Here are recent news articles. Your job is to:
-1. Select only the genuinely relevant ones (where skilled trades, workforce training, apprenticeships, or trade labor markets is the PRIMARY topic — not just mentioned briefly)
-2. Write a 2-3 sentence summary for each selected article explaining what it covers and why it matters to a workforce training company
-3. Return between 1 and 5 articles. Do not pad — return fewer if only a few are truly relevant. Return none if nothing qualifies.
+Here are recent news articles. Select only the genuinely relevant ones where skilled trades, workforce training, apprenticeships, or trade labor markets is the PRIMARY topic.
 
 Articles:
 ${articleList}
 
+Return between 1 and 5 relevant articles with a 2-3 sentence summary each explaining why it matters to a workforce training company.
+
 Respond ONLY with a valid JSON array (no markdown, no explanation):
 [
   {
-    "index": 0,
     "headline": "exact article title",
-    "summary": "2-3 sentence summary here.",
+    "summary": "2-3 sentence summary.",
     "url": "https://..."
   }
 ]
 
-If no articles are relevant, return exactly: []`;
+If nothing qualifies, return exactly: []`;
 
   const result = await model.generateContent(prompt);
   const text = result.response.text().trim();
@@ -121,7 +120,7 @@ function buildEmailHtml(articles) {
 
   const footer = `
       <p style="margin-top: 32px; font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 16px;">
-        Automated digest powered by Gemini AI &nbsp;·&nbsp; Attatche / Mason Street Training
+        Automated digest &nbsp;·&nbsp; Attatche / Mason Street Training
       </p>
     </div>
   `;
