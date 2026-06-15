@@ -10,7 +10,6 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.24.0",
-    "nodemailer": "^6.9.16"
+    "@google/generative-ai": "^0.24.0"
   }
 }
