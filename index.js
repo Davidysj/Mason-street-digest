@@ -1,72 +1,107 @@
 const nodemailer = require('nodemailer');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const https = require('https');
 
 // ============================================================
 // TOPIC KEYWORDS — edit these to change what news is searched
 // ============================================================
-const SEARCH_TOPICS = [
-  'skilled trades workforce training programs',
-  'vocational training apprenticeship programs news',
-  'skilled labor shortage construction manufacturing',
-  'trade workforce development funding',
-  'blue collar worker training AI automation impact',
-  'Attatche Mason Street Training workforce',
+const SEARCH_QUERIES = [
+  'skilled trades workforce training',
+  'vocational training apprenticeship',
+  'skilled labor shortage',
+  'trade workforce development',
+  'blue collar worker training automation',
 ];
 // ============================================================
 
-async function searchAndSummarize() {
+function fetchJson(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch (e) { reject(e); }
+      });
+    }).on('error', reject);
+  });
+}
+
+async function fetchArticles() {
+  const apiKey = process.env.NEWS_API_KEY;
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+  const allArticles = [];
+
+  for (const query of SEARCH_QUERIES) {
+    const encoded = encodeURIComponent(query);
+    const url = `https://newsapi.org/v2/everything?q=${encoded}&from=${sevenDaysAgo}&sortBy=relevancy&pageSize=5&language=en&apiKey=${apiKey}`;
+
+    try {
+      const data = await fetchJson(url);
+      if (data.articles) {
+        allArticles.push(...data.articles);
+      }
+    } catch (err) {
+      console.warn(`Failed to fetch for query "${query}":`, err.message);
+    }
+  }
+
+  // Deduplicate by URL
+  const seen = new Set();
+  return allArticles.filter(a => {
+    if (!a.url || seen.has(a.url)) return false;
+    seen.add(a.url);
+    return true;
+  });
+}
+
+async function filterAndSummarize(rawArticles) {
+  if (rawArticles.length === 0) return [];
+
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-2.0-flash-lite',
-    tools: [{ googleSearch: {} }],
-  });
+  const articleList = rawArticles.slice(0, 20).map((a, i) =>
+    `[${i}] Title: ${a.title}\nSource: ${a.source?.name || 'Unknown'}\nDescription: ${a.description || 'No description'}\nURL: ${a.url}`
+  ).join('\n\n');
 
-  const today = new Date().toLocaleDateString('en-US', {
-    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-  });
+  const prompt = `You are a news curator for Attatche / Mason Street Training, a company focused on skilled trades workforce development and training programs.
 
-  const prompt = `Today is ${today}.
+Here are recent news articles. Your job is to:
+1. Select only the genuinely relevant ones (where skilled trades, workforce training, apprenticeships, or trade labor markets is the PRIMARY topic — not just mentioned briefly)
+2. Write a 2-3 sentence summary for each selected article explaining what it covers and why it matters to a workforce training company
+3. Return between 1 and 5 articles. Do not pad — return fewer if only a few are truly relevant. Return none if nothing qualifies.
 
-Search for recent news articles published in the past 7 days that are relevant to these topics:
-${SEARCH_TOPICS.map(t => `- ${t}`).join('\n')}
+Articles:
+${articleList}
 
-Background context: These topics relate to Attatche / Mason Street Training, a company focused on skilled trades workforce development, training programs, and connecting employers with trade workers. They care about news covering skilled labor markets, workforce training initiatives, apprenticeship programs, policy affecting trade workers, and the intersection of AI/automation with blue-collar employment.
-
-A relevant article is one where the primary subject is skilled trades, workforce training, or trade labor markets. Articles that only mention these topics briefly are NOT relevant — skip them.
-
-Find between 1 and 5 genuinely relevant articles. Do not pad to reach 5. Zero is acceptable if nothing relevant was published.
-
-For each article provide:
-1. The exact headline
-2. A 2–3 sentence summary explaining what the article covers and why it matters to a workforce training company
-3. The full URL
-
-Respond ONLY with a valid JSON array in this exact format (no markdown, no explanation):
+Respond ONLY with a valid JSON array (no markdown, no explanation):
 [
   {
-    "headline": "Exact Article Title",
+    "index": 0,
+    "headline": "exact article title",
     "summary": "2-3 sentence summary here.",
-    "url": "https://example.com/article"
+    "url": "https://..."
   }
 ]
 
-If no relevant recent articles are found, return exactly: []`;
+If no articles are relevant, return exactly: []`;
 
   const result = await model.generateContent(prompt);
   const text = result.response.text().trim();
 
   const jsonMatch = text.match(/\[[\s\S]*\]/);
   if (!jsonMatch) {
-    console.warn('No JSON array found in Gemini response. Raw response:', text.slice(0, 500));
+    console.warn('No JSON found in Gemini response:', text.slice(0, 300));
     return [];
   }
 
   try {
-    const articles = JSON.parse(jsonMatch[0]);
-    return Array.isArray(articles) ? articles.slice(0, 5) : [];
+    const selected = JSON.parse(jsonMatch[0]);
+    return Array.isArray(selected) ? selected.slice(0, 5) : [];
   } catch (err) {
-    console.error('Failed to parse JSON from Gemini response:', err.message);
+    console.error('Failed to parse Gemini JSON:', err.message);
     return [];
   }
 }
@@ -153,7 +188,7 @@ async function sendEmail(articles) {
 }
 
 async function main() {
-  const required = ['GEMINI_API_KEY', 'GMAIL_ADDRESS', 'GMAIL_APP_PASSWORD'];
+  const required = ['GEMINI_API_KEY', 'GMAIL_ADDRESS', 'GMAIL_APP_PASSWORD', 'NEWS_API_KEY'];
   const missing = required.filter(k => !process.env[k]);
   if (missing.length > 0) {
     console.error(`Missing required environment variables: ${missing.join(', ')}`);
@@ -162,8 +197,11 @@ async function main() {
 
   console.log(`[${new Date().toISOString()}] Starting Mason Street Training news digest...`);
 
-  const articles = await searchAndSummarize();
-  console.log(`Found ${articles.length} relevant article(s).`);
+  const rawArticles = await fetchArticles();
+  console.log(`Fetched ${rawArticles.length} raw articles from NewsAPI.`);
+
+  const articles = await filterAndSummarize(rawArticles);
+  console.log(`Selected ${articles.length} relevant article(s).`);
   articles.forEach((a, i) => console.log(`  ${i + 1}. ${a.headline}`));
 
   await sendEmail(articles);
