@@ -1,5 +1,4 @@
 const https = require('https');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 // ============================================================
 // TOPIC KEYWORDS — edit these to change what news is searched
@@ -63,9 +62,6 @@ async function fetchArticles() {
 async function filterAndSummarize(rawArticles) {
   if (rawArticles.length === 0) return [];
 
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-
   const articleList = rawArticles.slice(0, 20).map((a, i) =>
     `[${i}] Title: ${a.title}\nSource: ${a.source?.name || 'Unknown'}\nDescription: ${a.description || 'No description'}\nURL: ${a.url}`
   ).join('\n\n');
@@ -90,12 +86,31 @@ Respond ONLY with a valid JSON array (no markdown, no explanation):
 
 If nothing qualifies, return exactly: []`;
 
-  const result = await model.generateContent(prompt);
-  const text = result.response.text().trim();
+  const payload = JSON.stringify({
+    model: 'llama-3.3-70b-versatile',
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.3,
+  });
 
+  const result = await fetchJson('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(payload),
+    },
+    body: payload,
+  });
+
+  if (!result.choices?.[0]?.message?.content) {
+    console.warn('Unexpected Groq response:', JSON.stringify(result).slice(0, 300));
+    return [];
+  }
+
+  const text = result.choices[0].message.content.trim();
   const jsonMatch = text.match(/\[[\s\S]*\]/);
   if (!jsonMatch) {
-    console.warn('No JSON found in Gemini response:', text.slice(0, 300));
+    console.warn('No JSON found in Groq response:', text.slice(0, 300));
     return [];
   }
 
@@ -103,7 +118,7 @@ If nothing qualifies, return exactly: []`;
     const selected = JSON.parse(jsonMatch[0]);
     return Array.isArray(selected) ? selected.slice(0, 5) : [];
   } catch (err) {
-    console.error('Failed to parse Gemini JSON:', err.message);
+    console.error('Failed to parse Groq JSON:', err.message);
     return [];
   }
 }
@@ -173,7 +188,7 @@ async function sendEmail(articles) {
 
   const payload = JSON.stringify({
     from: 'Mason Street News Agent <onboarding@resend.dev>',
-    to: [process.env.RECIPIENT_EMAIL || process.env.GMAIL_ADDRESS],
+    to: [process.env.RECIPIENT_EMAIL],
     subject,
     html: buildEmailHtml(articles),
   });
@@ -196,7 +211,7 @@ async function sendEmail(articles) {
 }
 
 async function main() {
-  const required = ['GEMINI_API_KEY', 'NEWS_API_KEY', 'RESEND_API_KEY', 'RECIPIENT_EMAIL'];
+  const required = ['GROQ_API_KEY', 'NEWS_API_KEY', 'RESEND_API_KEY', 'RECIPIENT_EMAIL'];
   const missing = required.filter(k => !process.env[k]);
   if (missing.length > 0) {
     console.error(`Missing required environment variables: ${missing.join(', ')}`);
@@ -208,16 +223,4 @@ async function main() {
   const rawArticles = await fetchArticles();
   console.log(`Fetched ${rawArticles.length} raw articles from NewsAPI.`);
 
-  const articles = await filterAndSummarize(rawArticles);
-  console.log(`Selected ${articles.length} relevant article(s).`);
-  articles.forEach((a, i) => console.log(`  ${i + 1}. ${a.headline}`));
-
-  await sendEmail(articles);
-  console.log('Done.');
-  process.exit(0);
-}
-
-main().catch(err => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+  const articles = await fi
