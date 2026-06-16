@@ -223,4 +223,16 @@ async function main() {
   const rawArticles = await fetchArticles();
   console.log(`Fetched ${rawArticles.length} raw articles from NewsAPI.`);
 
-  const articles = await fi
+  const articles = await filterAndSummarize(rawArticles);
+  console.log(`Selected ${articles.length} relevant article(s).`);
+  articles.forEach((a, i) => console.log(`  ${i + 1}. ${a.headline}`));
+
+  await sendEmail(articles);
+  console.log('Done.');
+  process.exit(0);
+}
+
+main().catch(err => {
+  console.error('Fatal error:', err);
+  process.exit(1);
+});
